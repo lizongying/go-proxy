@@ -1,6 +1,7 @@
 # go simple proxy
 
     可以建立简单的隧道代理。所有的代理可以放到redis set中，使用时随机取一个。
+    可以直接使用已经构建好的go-proxy-mac或go-proxy-linux
 
 ### dev
 
