@@ -80,7 +80,7 @@ func handle(client net.Conn) {
 		}
 	}()
 
-	var b [1024]byte
+	var b [2048]byte
 	n, err := client.Read(b[:])
 	if err != nil {
 		log.Println(err)
@@ -173,7 +173,7 @@ func handle(client net.Conn) {
 	}
 }
 
-func setProxyHeader(b [1024]byte, server net.Conn, proxyUser string, proxyPassword string) {
+func setProxyHeader(b [2048]byte, server net.Conn, proxyUser string, proxyPassword string) {
 	var proxyAuthorization = []byte(fmt.Sprintf("Proxy-Authorization: Basic %s\r\n\r\n", base64.StdEncoding.EncodeToString([]byte(fmt.Sprintf("%s:%s", proxyUser, proxyPassword)))))
 	var header []byte
 	for _, v := range b {
