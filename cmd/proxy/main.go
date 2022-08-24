@@ -12,6 +12,7 @@ import (
 	"net"
 	"net/url"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -40,7 +41,7 @@ var Proxies []string
 var Auth string
 
 func init() {
-	proxyHost := flag.String("ph", ":8081", "proxyHost")
+	proxyHost := flag.String("ph", "127.0.0.1:8081", "proxyHost")
 	proxyUser := flag.String("pu", "", "proxyUser")
 	proxyPassword := flag.String("pp", "", "proxyPassword")
 	proxyFile := flag.String("pf", "", "proxyFile")
@@ -105,7 +106,16 @@ func init() {
 }
 
 func main() {
-	l, err := net.Listen("tcp", ProxyHost)
+	ph := strings.Split(ProxyHost, ":")
+	Port := 8081
+	if len(ph) == 2 {
+		port, err := strconv.Atoi(ph[1])
+		if err != nil {
+			logger.Panic(err)
+		}
+		Port = port
+	}
+	l, err := net.Listen("tcp", fmt.Sprintf(":%d", Port))
 	if err != nil {
 		logger.Panic(err)
 	}
