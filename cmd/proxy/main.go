@@ -12,7 +12,6 @@ import (
 	"net"
 	"net/url"
 	"os"
-	"strconv"
 	"strings"
 	"time"
 )
@@ -107,15 +106,11 @@ func init() {
 
 func main() {
 	ph := strings.Split(ProxyHost, ":")
-	Port := 8081
+	Port := "8081"
 	if len(ph) == 2 {
-		port, err := strconv.Atoi(ph[1])
-		if err != nil {
-			logger.Panic(err)
-		}
-		Port = port
+		Port = ph[1]
 	}
-	l, err := net.Listen("tcp", fmt.Sprintf(":%d", Port))
+	l, err := net.Listen("tcp", fmt.Sprintf(":%s", Port))
 	if err != nil {
 		logger.Panic(err)
 	}

@@ -53,6 +53,7 @@
     ```
     # read from file
     go run ./cmd/proxy/*.go -s -pu "user1" -pp "password1" -pf ".proxies"
+    ./proxy_linux_amd64 -s -ph ":6379" -pu "hMN8yITtYYMx1cSL" -pp "LgpPI4qPDh6xe2Pt" -pf ".proxies"
 
     # read from redis
     ./releases/proxy -v -s -pu "user" -pp "password" -rh "127.0.0.1:6377" -rp "password" -rd 0 -rk "proxies"
