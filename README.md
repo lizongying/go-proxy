@@ -32,9 +32,7 @@
     * -s 设置是否server，默认false（client）
     * -v 调试模式（显示文件行数）
     * -q 安静模式（无输出）
-    * -ph set proxy host，default "127.0.0.1:8081"
-    * -pu set proxy user，default ""
-    * -pp set proxy password，default ""
+    * -ph set proxy host，default ":8081"
     * -pf set proxy file，default ""
     * -rh set redis host，default "127.0.0.1:6379"
     * -rp set redis password，default ""
@@ -43,20 +41,20 @@
 
     client
     ```
-    go run ./cmd/proxy/*.go
+    go run ./cmd/proxy/*.go -v -ph "//user2:password2@:8082"
+    go run ./cmd/proxy/*.go -v -ph "//user3:password3@:8083"
 
     # add into redis
-    ./releases/proxy -pu "user5" -pp "password5" -rh "127.0.0.1:6377" -rp "password" -rd 0 -rk "proxies"
+    ./releases/proxy -ph "//user5:password5@" -rh "127.0.0.1:6377" -rp "password" -rd 0 -rk "proxies"
     ```
 
     server
     ```
     # read from file
-    go run ./cmd/proxy/*.go -s -pu "user1" -pp "password1" -pf ".proxies"
-    ./proxy_linux_amd64 -s -ph ":6379" -pu "hMN8yITtYYMx1cSL" -pp "LgpPI4qPDh6xe2Pt" -pf ".proxies"
+    go run ./cmd/proxy/*.go -v -s -ph "//user1:password1@" -pf ".proxies"
 
     # read from redis
-    ./releases/proxy -v -s -pu "user" -pp "password" -rh "127.0.0.1:6377" -rp "password" -rd 0 -rk "proxies"
+    ./releases/proxy -v -s -ph "//user:password@" -rh "127.0.0.1:6377" -rp "password" -rd 0 -rk "proxies"
     ```
 
 ### test

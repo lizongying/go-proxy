@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"encoding/base64"
+	"errors"
 	"flag"
 	"fmt"
 	"github.com/go-redis/redis"
@@ -12,37 +13,32 @@ import (
 	"net"
 	"net/url"
 	"os"
+	"regexp"
 	"strings"
 	"time"
 )
 
 var IsServer bool
-var IsDebug bool
-var IsQuiet bool
 
-var ProxyServer string
+var ProxyServer *url.URL
+var Proxies []*url.URL
 
-var ProxyHost string
-var ProxyUser string
-var ProxyPassword string
 var ProxyFile string
-
-var RedisHost string
-var RedisPassword string
-var RedisDb int
 var RedisKey string
 
 var logger *log.Logger
 var rdb *redis.Client
 
-var Proxies []string
-
 var Auth string
+
+const maxTimeout = 60   // second
+const maxRequest = 2048 // byte
+
+var reProxyAuthorization = regexp.MustCompile(`Proxy-Authorization: (Basic [^\r]+)\r\n`)
+var reProxyConnection = regexp.MustCompile(`Proxy-Connection: `)
 
 func init() {
 	proxyHost := flag.String("ph", "127.0.0.1:8081", "proxyHost")
-	proxyUser := flag.String("pu", "", "proxyUser")
-	proxyPassword := flag.String("pp", "", "proxyPassword")
 	proxyFile := flag.String("pf", "", "proxyFile")
 	redisHost := flag.String("rh", "127.0.0.1:6379", "redisHost")
 	redisPassword := flag.String("rp", "", "redisPassword")
@@ -52,44 +48,50 @@ func init() {
 	isDebug := flag.Bool("v", false, "isDebug")
 	isQuiet := flag.Bool("q", false, "isQuiet")
 	flag.Parse()
-	ProxyHost = *proxyHost
-	ProxyUser = *proxyUser
-	ProxyPassword = *proxyPassword
+	ProxyHost := *proxyHost
 	ProxyFile = *proxyFile
-	RedisHost = *redisHost
-	RedisPassword = *redisPassword
-	RedisDb = *redisDb
+	RedisHost := *redisHost
+	RedisPassword := *redisPassword
+	RedisDb := *redisDb
 	RedisKey = *redisKey
 	IsServer = *isServer
-	IsDebug = *isDebug
-	IsQuiet = *isQuiet
+	IsDebug := *isDebug
+	IsQuiet := *isQuiet
 	if IsDebug {
-		logger = log.New(os.Stdout, "", log.Ldate|log.Ltime|log.Llongfile)
+		logger = log.New(os.Stdout, "", log.Ldate|log.Ltime|log.Lshortfile)
 	} else {
 		logger = log.New(os.Stdout, "", log.Ldate|log.Ltime)
 	}
 	if IsQuiet {
 		logger.SetOutput(io.Discard)
 	}
-	if ProxyUser != "" && ProxyPassword != "" {
-		Auth = base64.StdEncoding.EncodeToString([]byte(fmt.Sprintf("%s:%s", ProxyUser, ProxyPassword)))
+
+	proxyServer, err := url.Parse(ProxyHost)
+	if err != nil {
+		logger.Panic(err)
+	}
+	ProxyServer = proxyServer
+	user := ProxyServer.User.String()
+	if ProxyServer.Scheme == "" {
+		ProxyServer.Scheme = "http"
+	}
+	if ProxyServer.Hostname() == "" {
+		ProxyServer.Host = fmt.Sprintf("%s:%s", "127.0.0.1", ProxyServer.Port())
+	}
+	if ProxyServer.Port() == "" {
+		ProxyServer.Host = fmt.Sprintf("%s:%s", ProxyServer.Hostname(), "8081")
+	}
+	if ProxyServer.User.String() != "" {
+		Auth = base64.StdEncoding.EncodeToString([]byte(user))
 	}
 
 	if IsServer {
 		logger.Println("mode: server")
 	} else {
 		logger.Println("mode: client")
-		ProxyServer = ProxyHost
-		if Auth != "" {
-			ProxyServer = fmt.Sprintf("%s:%s@%s", ProxyUser, ProxyPassword, ProxyHost)
-		}
 	}
 
-	if Auth != "" {
-		logger.Println("proxy:", fmt.Sprintf("%s:%s@%s", ProxyUser, ProxyPassword, ProxyHost))
-	} else {
-		logger.Println("proxy:", ProxyHost)
-	}
+	logger.Println("proxy:", ProxyServer.String())
 
 	if ProxyFile != "" {
 		logger.Println(fmt.Sprintf("file: %s", ProxyFile))
@@ -105,19 +107,26 @@ func init() {
 }
 
 func main() {
-	ph := strings.Split(ProxyHost, ":")
-	Port := "8081"
-	if len(ph) == 2 {
-		Port = ph[1]
+	var err error
+
+	Port := ProxyServer.Port()
+	var listener net.Listener
+	if ProxyServer.Scheme == "https" {
+		l, e := net.Listen("tcp", fmt.Sprintf(":%s", Port))
+		listener = l
+		err = e
+	} else {
+		l, e := net.Listen("tcp", fmt.Sprintf(":%s", Port))
+		listener = l
+		err = e
 	}
-	l, err := net.Listen("tcp", fmt.Sprintf(":%s", Port))
 	if err != nil {
 		logger.Panic(err)
 	}
 	go func() {
-		if RedisKey != "" {
+		if rdb != nil {
 			if !IsServer {
-				_, err := rdb.SAdd(RedisKey, ProxyServer).Result()
+				_, err = rdb.SAdd(RedisKey, ProxyServer.String()).Result()
 				if err != nil {
 					logger.Println(err)
 					return
@@ -128,11 +137,13 @@ func main() {
 	updateProxies()
 	changeProxy()
 	for {
-		client, err := l.Accept()
-		if err != nil {
+		conn, e := listener.Accept()
+		if e != nil {
+			err = e
 			logger.Println(err)
+			continue
 		}
-		go handle(client)
+		go handle(conn)
 		changeProxy()
 	}
 }
@@ -143,7 +154,15 @@ func readFile() {
 		logger.Println(err)
 	}
 	f = bytes.TrimSpace(f)
-	Proxies = strings.Split(string(f), "\n")
+	var ProxiesNew []*url.URL
+	proxies := strings.Split(string(f), "\n")
+	for _, v := range proxies {
+		u, _ := url.Parse(v)
+		if u.Host != "" {
+			ProxiesNew = append(ProxiesNew, u)
+		}
+	}
+	Proxies = ProxiesNew
 	logger.Println("proxies count: ", len(Proxies))
 }
 
@@ -153,7 +172,14 @@ func readRedis() {
 		logger.Println(err)
 		return
 	}
-	Proxies = proxies
+	var ProxiesNew []*url.URL
+	for _, v := range proxies {
+		u, _ := url.Parse(v)
+		if u.Host != "" {
+			ProxiesNew = append(ProxiesNew, u)
+		}
+	}
+	Proxies = ProxiesNew
 	logger.Println("proxies count: ", len(Proxies))
 }
 
@@ -163,7 +189,7 @@ func changeProxy() {
 			if len(Proxies) == 0 {
 				if ProxyFile != "" {
 					readFile()
-				} else if RedisKey != "" {
+				} else if rdb != nil {
 					readRedis()
 				}
 			}
@@ -182,7 +208,7 @@ func updateProxies() {
 				<-ticker.C
 				if ProxyFile != "" {
 					readFile()
-				} else if RedisKey != "" {
+				} else if rdb != nil {
 					readRedis()
 				}
 			}
@@ -190,137 +216,173 @@ func updateProxies() {
 	}()
 }
 
-func handle(client net.Conn) {
-	if client == nil {
-		logger.Println("client not ok")
+func handle(conn net.Conn) {
+	var err error
+
+	if conn == nil {
+		err = errors.New("conn not ok")
+		logger.Println(err)
 		return
 	}
 
 	defer func() {
-		err := client.Close()
+		err = conn.Close()
 		if err != nil {
 			logger.Println(err)
 			return
 		}
 	}()
 
-	var b [2048]byte
-	n, err := client.Read(b[:])
+	var b [maxRequest]byte
+	n, err := conn.Read(b[:])
 	if err != nil {
 		logger.Println(err)
 		return
 	}
-	var method, URL, address string
-	if bytes.IndexByte(b[:], '\n') == -1 {
-		logger.Println("headers empty")
+
+	body := b[:n]
+	var method, URL, version string
+	headerIndex := bytes.IndexByte(body, '\n') + 1
+	if headerIndex == 0 {
+		err = errors.New("headers empty")
+		logger.Println(err)
 		return
 	}
 
 	if Auth != "" {
-		if !bytes.Contains(b[:], []byte(Auth)) {
-			logger.Println("Authorization failed")
+
+		// note: maybe Authorization not Proxy-Authorization
+		if !bytes.Contains(body, []byte(Auth)) {
+			err = errors.New("authorization failed")
+			logger.Println(err)
 			return
 		}
 	}
 
-	_, err = fmt.Sscanf(string(b[:bytes.IndexByte(b[:], '\n')]), "%s%s", &method, &URL)
+	_, err = fmt.Sscanf(string(body[:headerIndex]), "%s%s%s", &method, &URL, &version)
 	if err != nil {
 		logger.Println(err)
 		return
 	}
 
-	hostPortURL, err := url.Parse(URL)
+	if !strings.Contains(URL, "//") {
+		URL = fmt.Sprintf("//%s", URL)
+	}
+	address, err := url.Parse(URL)
 	if err != nil {
 		logger.Println(err)
 		return
 	}
+	if address.Host == "false" {
+		logger.Println("host false")
+		return
+	}
+
 	if method == "CONNECT" {
-
-		//https
-		address = hostPortURL.Scheme + ":" + hostPortURL.Opaque
+		address.Scheme = "https"
 	} else {
-
-		//http
-		if strings.Index(hostPortURL.Host, ":") == -1 {
-
-			//host不带端口， 默认80
-			address = hostPortURL.Host + ":80"
-		} else {
-			address = hostPortURL.Host
+		if address.Port() == "" {
+			address.Host = fmt.Sprintf("%s:80", address.Host)
 		}
 	}
-
-	var proxyUser = ProxyUser
-	var proxyPassword = ProxyPassword
 
 	//拨号
 	if IsServer {
-		//logger.Println("ProxyAgent:", ProxyServer)
 		address = ProxyServer
-		arr := strings.Split(ProxyServer, "@")
-		if len(arr) == 2 {
-			address = arr[1]
-			arr2 := strings.Split(arr[0], ":")
-			proxyUser = arr2[0]
-			proxyPassword = arr2[1]
+	}
+	dialer := net.Dialer{Timeout: time.Second * time.Duration(maxTimeout)}
+
+	var connDest net.Conn
+	defer func() {
+		if connDest != nil {
+			err = connDest.Close()
+			if err != nil {
+				logger.Println(err)
+				return
+			}
 		}
+	}()
+
+	if address.Scheme == "https" && IsServer {
+		s, e := dialer.Dial("tcp", address.Host)
+		if e != nil {
+			err = e
+			logger.Println(err)
+			return
+		}
+		connDest = s
+	} else {
+		s, e := dialer.Dial("tcp", address.Host)
+		if e != nil {
+			err = e
+			logger.Println(err)
+			return
+		}
+		connDest = s
 	}
-	dialer := net.Dialer{Timeout: time.Minute}
-	server, err := dialer.Dial("tcp", address)
-	if err != nil {
-		logger.Println(err)
-		return
+
+	// TODO 应该复用 http2?
+	user := address.User.String()
+	if user != "" {
+
+		// just for server
+		setProxyHeader(&body, headerIndex, connDest, user)
 	}
+
 	if method == "CONNECT" {
-		if IsServer {
-			setProxyHeader(b, server, proxyUser, proxyPassword)
-		} else {
-			_, err = fmt.Fprint(client, "HTTP/1.1 200 Connection established\r\n\r\n")
-		}
+		_, err = fmt.Fprint(conn, "HTTP/1.1 200 Connection established\r\n\r\n")
 		if err != nil {
 			logger.Println(err)
 			return
 		}
 	} else {
-		if IsServer {
-			setProxyHeader(b, server, proxyUser, proxyPassword)
-		} else {
-			_, err = server.Write(b[:n])
+
+		// request changed, should do something
+		if !IsServer {
+			setHeader(&body, headerIndex, method, version)
 		}
+		_, err = connDest.Write(body)
 		if err != nil {
 			logger.Println(err)
 			return
 		}
 	}
 
-	//转发
 	go func() {
-		_, err = io.Copy(server, client)
+		_, err = io.Copy(connDest, conn)
 		if err != nil {
 			//use of closed network connection
 			//logger.Println(err)
 			return
 		}
 	}()
-	_, err = io.Copy(client, server)
+	_, err = io.Copy(conn, connDest)
 	if err != nil {
 		logger.Println(err)
 		return
 	}
 }
 
-func setProxyHeader(b [2048]byte, server net.Conn, proxyUser string, proxyPassword string) {
-	var proxyAuthorization = []byte(fmt.Sprintf("Proxy-Authorization: Basic %s\r\n\r\n", base64.StdEncoding.EncodeToString([]byte(fmt.Sprintf("%s:%s", proxyUser, proxyPassword)))))
-	var header []byte
-	for _, v := range b {
-		if v == 0 {
-			break
-		}
-		header = append(header, v)
+func setProxyHeader(body *[]byte, headerIndex int, conn net.Conn, user string) {
+	var proxyAuthorization = []byte(fmt.Sprintf("Proxy-Authorization: Basic %s\r\n", base64.StdEncoding.EncodeToString([]byte(user))))
+	*body = reProxyAuthorization.ReplaceAll(*body, []byte(nil))
+	bodyNew := (*body)[:headerIndex]
+	bodyAfter := []byte(string((*body)[headerIndex:]))
+
+	// add new proxy
+	bodyNew = append(bodyNew, proxyAuthorization...)
+	bodyNew = append(bodyNew, bodyAfter...)
+	_, err := conn.Write(bodyNew)
+	if err != nil {
+		logger.Println(err)
 	}
-	header = header[:len(header)-2]
-	for _, v := range proxyAuthorization {
-		header = append(header, v)
-	}
-	_, _ = server.Write(header)
+	*body = bodyNew
+}
+
+func setHeader(body *[]byte, headerIndex int, method string, version string) {
+	bodyNew := []byte(fmt.Sprintf("%s / %s\r\n", method, version))
+	bodyNew = append(bodyNew, (*body)[headerIndex:]...)
+	bodyNew = reProxyAuthorization.ReplaceAll(bodyNew, []byte(nil))
+	bodyNew = reProxyConnection.ReplaceAll(bodyNew, []byte(`Connection: `))
+	*body = bodyNew
 }
