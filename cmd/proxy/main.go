@@ -226,11 +226,7 @@ func handle(conn net.Conn) {
 	}
 
 	defer func() {
-		err = conn.Close()
-		if err != nil {
-			logger.Println(err)
-			return
-		}
+		_ = conn.Close()
 	}()
 
 	var b [maxRequest]byte
@@ -295,11 +291,7 @@ func handle(conn net.Conn) {
 	var connDest net.Conn
 	defer func() {
 		if connDest != nil {
-			err = connDest.Close()
-			if err != nil {
-				logger.Println(err)
-				return
-			}
+			_ = connDest.Close()
 		}
 	}()
 
@@ -322,45 +314,35 @@ func handle(conn net.Conn) {
 	}
 
 	// TODO 应该复用 http2?
-	user := address.User.String()
-	if user != "" {
 
-		// just for server
-		setProxyHeader(&body, headerIndex, connDest, user)
-	}
-
-	if method == "CONNECT" {
-		_, err = fmt.Fprint(conn, "HTTP/1.1 200 Connection established\r\n\r\n")
-		if err != nil {
-			logger.Println(err)
-			return
+	if !IsServer {
+		if method == "CONNECT" {
+			_, err = fmt.Fprint(conn, fmt.Sprintf("%s 200 Connection established\r\n\r\n", version))
+			if err != nil {
+				logger.Println(err)
+				return
+			}
+		} else {
+			setHeader(&body, headerIndex, connDest, method, version)
 		}
 	} else {
-
-		// request changed, should do something
-		if !IsServer {
-			setHeader(&body, headerIndex, method, version)
-		}
-		_, err = connDest.Write(body)
-		if err != nil {
-			logger.Println(err)
-			return
+		user := address.User.String()
+		if user != "" {
+			setProxyHeader(&body, headerIndex, connDest, user)
 		}
 	}
 
 	go func() {
-		_, err = io.Copy(connDest, conn)
-		if err != nil {
-			//use of closed network connection
-			//logger.Println(err)
-			return
-		}
+		defer func() {
+			_ = conn.Close()
+		}()
+		defer func() {
+			_ = connDest.Close()
+		}()
+
+		_, _ = io.Copy(conn, connDest)
 	}()
-	_, err = io.Copy(conn, connDest)
-	if err != nil {
-		logger.Println(err)
-		return
-	}
+	_, _ = io.Copy(connDest, conn)
 }
 
 func setProxyHeader(body *[]byte, headerIndex int, conn net.Conn, user string) {
@@ -379,10 +361,14 @@ func setProxyHeader(body *[]byte, headerIndex int, conn net.Conn, user string) {
 	*body = bodyNew
 }
 
-func setHeader(body *[]byte, headerIndex int, method string, version string) {
+func setHeader(body *[]byte, headerIndex int, conn net.Conn, method string, version string) {
 	bodyNew := []byte(fmt.Sprintf("%s / %s\r\n", method, version))
 	bodyNew = append(bodyNew, (*body)[headerIndex:]...)
 	bodyNew = reProxyAuthorization.ReplaceAll(bodyNew, []byte(nil))
 	bodyNew = reProxyConnection.ReplaceAll(bodyNew, []byte(`Connection: `))
+	_, err := conn.Write(bodyNew)
+	if err != nil {
+		logger.Println(err)
+	}
 	*body = bodyNew
 }

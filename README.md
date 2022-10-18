@@ -61,6 +61,7 @@
 
     ```
     curl -x 127.0.0.1:8080 https://cip.cc
+    curl --http1.0 -x user1:password1@127.0.0.1:8081 http://cip.cc
 
     # with auth
     curl -x user1:password1@127.0.0.1:8081 http://cip.cc
@@ -72,6 +73,9 @@
     * check same host proxy
     * only server read proxy file
     * docker support
+    * http1.0 / http1.1
+    * http2 support
+    * Keep-Alive support
 
 ### 赞赏
 
