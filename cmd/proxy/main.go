@@ -290,9 +290,7 @@ func handle(conn net.Conn) {
 
 	var connDest net.Conn
 	defer func() {
-		if connDest != nil {
-			_ = connDest.Close()
-		}
+		_ = connDest.Close()
 	}()
 
 	if address.Scheme == "https" && IsServer {
